@@ -18,7 +18,12 @@ from food import (
 
 
 @tool
-def search_restaurants_tool(lat: float, lon: float, cuisine: str = "", limit: int = 15) -> str:
+def search_restaurants_tool(
+    lat: float | str,
+    lon: float | str,
+    cuisine: str = "",
+    limit: int = 15
+) -> str:
     """
     Search for restaurants, cafes, and bars near given coordinates.
     Use this when the user asks about restaurants, places to eat, or food spots in a location.
@@ -135,7 +140,7 @@ def get_trending_dishes_tool(city: str) -> str:
 
 
 @tool
-def get_location_name_tool(lat: float, lon: float) -> str:
+def get_location_name_tool(lat: float | str, lon: float | str) -> str:
     """
     Get the real city/place name from latitude and longitude coordinates using reverse geocoding.
     ALWAYS use this first when the user clicks on the globe and the location name looks like
@@ -150,7 +155,7 @@ def get_location_name_tool(lat: float, lon: float) -> str:
 
 
 @tool
-def get_local_dishes_tool(lat: float, lon: float, city: str = "") -> str:
+def get_local_dishes_tool(lat: float | str, lon: float | str, city: str = "") -> str:
     """
     Discover local and traditional dishes for a location. Combines reverse geocoding,
     Wikipedia food culture data, Brave Search, and nearby restaurant cuisine types to identify what

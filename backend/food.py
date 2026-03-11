@@ -18,6 +18,18 @@ BRAVE_LOCAL_POIS_URL = "https://api.search.brave.com/res/v1/local/pois"
 BRAVE_LOCAL_DESC_URL = "https://api.search.brave.com/res/v1/local/descriptions"
 
 
+def _make_restaurant_id(name: str, address: str = "") -> str:
+    """
+    Build a stable, URL-safe identifier for a restaurant from its name and address.
+    Used by the backend so the frontend can refer back to a specific restaurant
+    when a nearby result is clicked.
+    """
+    base = f"{name} {address}".strip() or "restaurant"
+    base = base.lower()
+    base = re.sub(r"[^a-z0-9]+", "-", base).strip("-")
+    return base[:80] or "restaurant"
+
+
 def _brave_headers() -> dict:
     api_key = os.getenv("BRAVE_SEARCH_API_KEY")
     if not api_key:
@@ -209,6 +221,7 @@ def _enrich_brave_locations(locations: list[dict]) -> list[dict]:
     headers = _brave_headers()
     if not headers or not locations:
         return [{
+            "id": loc.get("id") or _make_restaurant_id(loc.get("title", "Unknown")),
             "name": loc.get("title", "Unknown"),
             "cuisine": "Various",
             "address": "",
@@ -235,10 +248,13 @@ def _enrich_brave_locations(locations: list[dict]) -> list[dict]:
 
     results = []
     for poi in pois_data.get("results", []):
+        name = poi.get("name", "Unknown")
+        address = poi.get("address", {}).get("streetAddress", "")
         results.append({
-            "name": poi.get("name", "Unknown"),
+            "id": poi.get("id") or _make_restaurant_id(name, address),
+            "name": name,
             "cuisine": ", ".join(poi.get("categories", [])) or "Various",
-            "address": poi.get("address", {}).get("streetAddress", ""),
+            "address": address,
             "opening_hours": "",
             "lat": poi.get("coordinates", {}).get("latitude"),
             "lon": poi.get("coordinates", {}).get("longitude"),
@@ -251,6 +267,7 @@ def _enrich_brave_locations(locations: list[dict]) -> list[dict]:
     if not results:
         for loc in locations:
             results.append({
+                "id": loc.get("id") or _make_restaurant_id(loc.get("title", "Unknown")),
                 "name": loc.get("title", "Unknown"),
                 "cuisine": "Various",
                 "address": "",
@@ -315,12 +332,31 @@ Search results:
                 text = text[:-3]
             text = text.strip()
         restaurants = json.loads(text)
-        return restaurants[:limit]
+
+        normalized: list[dict] = []
+        for r in restaurants[:limit]:
+            name = r.get("name") or r.get("title") or ""
+            address = r.get("address", "") or city
+            r["name"] = name
+            r["address"] = address
+            r.setdefault("phone", "")
+            r["id"] = _make_restaurant_id(name, address)
+            normalized.append(r)
+        return normalized
     except Exception:
         # Fallback: return raw results
-        fallback = []
+        fallback: list[dict] = []
         for r in web_results[:limit]:
-            fallback.append({"name": r.get("title", ""), "address": city})
+            name = r.get("title", "") or ""
+            address = city
+            fallback.append(
+                {
+                    "id": _make_restaurant_id(name, address),
+                    "name": name,
+                    "address": address,
+                    "phone": "",
+                }
+            )
         return fallback
 
 
@@ -384,14 +420,18 @@ def search_restaurants(
         if cuisine and cuisine.lower() not in cuisine_tag.lower():
             continue
 
-        results.append({
-            "name": name,
-            "cuisine": cuisine_tag or "Various",
-            "address": tags.get("addr:street", "") or tags.get("address", ""),
-            "opening_hours": tags.get("opening_hours", ""),
-            "lat": el.get("lat"),
-            "lon": el.get("lon"),
-        })
+        address = tags.get("addr:street", "") or tags.get("address", "")
+        results.append(
+            {
+                "id": _make_restaurant_id(name, address or f"{el.get('lat')},{el.get('lon')}"),
+                "name": name,
+                "cuisine": cuisine_tag or "Various",
+                "address": address,
+                "opening_hours": tags.get("opening_hours", ""),
+                "lat": el.get("lat"),
+                "lon": el.get("lon"),
+            }
+        )
         if len(results) >= limit:
             break
 

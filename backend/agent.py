@@ -28,8 +28,8 @@ When a user selects a location on the globe, ALWAYS:
 3. Use get_local_dishes_tool to discover traditional and popular local dishes.
 4. Use search_restaurants_tool to find specific nearby restaurants.
 
-When the user asks for a comprehensive overview or general information:
-- ALWAYS prioritize brave_search_tool to get fast, high-quality summaries from the web.
+When the user asks for a comprehensive overview or a SPECIFIC restaurant/dish:
+- ALWAYS prioritize brave_search_tool to get fast, high-quality context and 'what makes it special' summaries from the web.
 
 When the user asks about reviews:
 - Use search_food_reviews_tool.

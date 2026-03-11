@@ -45,6 +45,20 @@ class ChatResponse(BaseModel):
     type: str = "chat"
 
 
+class LocationSummaryRequest(BaseModel):
+    lat: float
+    lon: float
+    location_name: str
+    preferences: Optional[str] = ""
+
+
+class LocationSummaryResponse(BaseModel):
+    response: str
+    tools_used: list[str]
+    restaurants: list[dict]
+    type: str = "location_summary"
+
+
 @app.post("/chat", response_model=ChatResponse)
 async def chat(req: ChatRequest):
     try:
@@ -114,6 +128,46 @@ async def get_restaurants(
 ):
     results = search_restaurants(lat, lon, limit=20)
     return {"restaurants": results}
+
+
+@app.post("/location/summary", response_model=LocationSummaryResponse)
+async def location_summary(req: LocationSummaryRequest):
+    """
+    Quick endpoint for 'clicked on map' interactions.
+    Given lat/lon and a location name, returns:
+      - a short overview of what is there and local food
+      - a list of nearby restaurants.
+    """
+    try:
+        # Fixed-style question optimized for map clicks
+        message = (
+            "Briefly describe what this place is like, what it is known for, "
+            "and the typical local food there. Then highlight a few great things "
+            "to eat nearby."
+        )
+        response, tools_used = run_agent(
+            message,
+            req.lat,
+            req.lon,
+            req.location_name,
+            req.preferences or "",
+        )
+    except Exception as e:
+        response = (
+            "Sorry, I had trouble summarizing this location. Please try again. "
+            f"({type(e).__name__})"
+        )
+        tools_used = []
+
+    restaurants = search_restaurants(req.lat, req.lon, limit=20)
+    restaurants = [r for r in restaurants if "error" not in r and r.get("name")]
+
+    return LocationSummaryResponse(
+        response=response,
+        tools_used=tools_used,
+        restaurants=restaurants,
+        type="location_summary",
+    )
 
 
 
