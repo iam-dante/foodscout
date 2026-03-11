@@ -7,13 +7,13 @@ from langchain_core.tools import tool
 from food import (
     search_restaurants,
     brave_count_restaurants,
-    get_food_events,
     get_city_food_culture,
     get_trending_dishes,
     reverse_geocode,
     get_local_dishes,
     brave_search_food_reviews,
     brave_search_food,
+    brave_search_comprehensive,
 )
 
 
@@ -100,24 +100,6 @@ def search_regional_food_tool(city: str, query_extra: str = "") -> str:
     return "\n".join(lines)
 
 
-@tool
-def get_food_events_tool(city: str) -> str:
-    """
-    Get food festivals and culinary events in a city.
-    Use when the user asks about food events, festivals, or culinary happenings.
-    """
-    events = get_food_events(city)
-    if not events:
-        return f"No food events found for {city}."
-    lines = [f"Food events in {city}:"]
-    for e in events:
-        line = f"- {e['name']}"
-        if e.get("description"):
-            line += f": {e['description'][:120]}"
-        if e.get("url"):
-            line += f" ({e['url']})"
-        lines.append(line)
-    return "\n".join(lines)
 
 
 @tool
@@ -202,3 +184,13 @@ def get_local_dishes_tool(lat: float, lon: float, city: str = "") -> str:
             lines.append(f"  - {d['name']} ({d.get('count', 0)} restaurants)")
 
     return "\n".join(lines)
+
+
+@tool
+def brave_search_tool(query: str) -> str:
+    """
+    Comprehensive web search for food, culture, and travel information.
+    Use this for high-level overviews, 'what to do', or general questions about a city's food scene.
+    It returns a concise, LLM-powered summary of the top web results.
+    """
+    return brave_search_comprehensive(query)

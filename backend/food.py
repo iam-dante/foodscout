@@ -8,7 +8,7 @@ import re
 from typing import Optional
 
 import httpx
-from langchain_openai import ChatOpenAI
+from langchain_groq import ChatGroq
 
 NOMINATIM_REVERSE = "https://nominatim.openstreetmap.org/reverse"
 OVERPASS_URL = "https://overpass-api.de/api/interpreter"
@@ -44,6 +44,45 @@ def _brave_web_search(query: str, count: int = 10, extra_snippets: bool = True) 
             return resp.json()
     except Exception:
         return {}
+
+
+def brave_search_comprehensive(query: str, count: int = 10) -> str:
+    """
+    Run a Brave Web Search, get top results, and use Groq LLM to summarize/process them.
+    Returns a concise, helpful summary.
+    """
+    data = _brave_web_search(query, count=count)
+    results = data.get("web", {}).get("results", [])
+    if not results:
+        return f"No search results found for '{query}'."
+
+    snippets = []
+    for r in results[:10]:
+        snippet = f"Title: {r.get('title', '')}\nURL: {r.get('url', '')}\nDescription: {r.get('description', '')}"
+        extra = " | ".join(r.get("extra_snippets", [])[:2])
+        if extra:
+            snippet += f"\nExtra Context: {extra}"
+        snippets.append(snippet)
+    
+    context = "\n\n".join(snippets)
+    
+    prompt = f"""You are a helpful travel and food assistant. Based on the search results below for the query "{query}", 
+generate a concise, high-quality summary that answers the query. 
+Focus on the most relevant information, keep it professional and easy to read.
+Avoid repeating the same information. If listing places or dishes, be brief.
+
+Search Results:
+{context}
+
+Concise Summary:"""
+
+    try:
+        llm = _get_llm()
+        response = llm.invoke(prompt)
+        return response.content.strip()
+    except Exception as e:
+        # Fallback to just the snippets if LLM fails
+        return f"Summarization failed. Here are the top results:\n" + "\n".join([f"- {r.get('title')}: {r.get('description')}" for r in results[:5]])
 
 
 def brave_search_food(city: str, query_extra: str = "") -> list[dict]:
@@ -225,8 +264,8 @@ def _enrich_brave_locations(locations: list[dict]) -> list[dict]:
 
 def _get_llm():
     """Get a shared LLM instance for extraction."""
-    api_key = os.getenv("OPENAI_API_KEY") or os.getenv("CHATGPT_API_KEY")
-    return ChatOpenAI(model="gpt-4o-mini", api_key=api_key, temperature=0)
+    api_key = os.getenv("GROQ_API_KEY")
+    return ChatGroq(model="meta-llama/llama-4-scout-17b-16e-instruct", api_key=api_key, temperature=0)
 
 
 def brave_llm_restaurants(lat: float, lon: float, city: str = "", limit: int = 20) -> list[dict]:
@@ -258,8 +297,9 @@ def brave_llm_restaurants(lat: float, lon: float, city: str = "", limit: int = 2
 For each restaurant, extract:
 - name: the actual restaurant name (not the article title)
 - address: the street address or location description if available, otherwise the neighborhood or area in {city}
+- phone: the phone number if available in the text, otherwise an empty string
 
-Return ONLY a JSON array of objects with "name" and "address" keys. No extra text.
+Return ONLY a JSON array of objects with "name", "address" and "phone" keys. No extra text.
 
 Search results:
 {context}"""
@@ -284,59 +324,6 @@ Search results:
         return fallback
 
 
-def brave_llm_events(city: str, limit: int = 5) -> list[dict]:
-    """
-    Use Brave Search + LLM to extract structured food event data.
-    """
-    q = f"food festivals culinary events {city} 2026"
-    data = _brave_web_search(q, count=10, extra_snippets=True)
-    web_results = data.get("web", {}).get("results", [])
-    if not web_results:
-        return []
-
-    snippets = []
-    for r in web_results[:10]:
-        snippet = f"Title: {r.get('title', '')}\nURL: {r.get('url', '')}\nDescription: {r.get('description', '')}"
-        extras = r.get("extra_snippets", [])
-        if extras:
-            snippet += "\nExtra: " + " | ".join(extras[:3])
-        snippets.append(snippet)
-    context = "\n\n".join(snippets)
-
-    prompt = f"""From the following web search results about food events in {city}, extract exactly {limit} real food events or festivals.
-
-For each event, extract:
-- name: the actual event/festival name
-- date: the date or date range (e.g. "March 15-17, 2026") or "TBA" if not found
-- venue: the venue name or location
-- url: a relevant URL if available, otherwise empty string
-
-Return ONLY a JSON array of objects with "name", "date", "venue", and "url" keys. No extra text.
-
-Search results:
-{context}"""
-
-    try:
-        llm = _get_llm()
-        response = llm.invoke(prompt)
-        text = response.content.strip()
-        if text.startswith("```"):
-            text = text.split("\n", 1)[1] if "\n" in text else text[3:]
-            if text.endswith("```"):
-                text = text[:-3]
-            text = text.strip()
-        events = json.loads(text)
-        return events[:limit]
-    except Exception:
-        fallback = []
-        for r in web_results[:limit]:
-            fallback.append({
-                "name": r.get("title", ""),
-                "date": "TBA",
-                "venue": "",
-                "url": r.get("url", ""),
-            })
-        return fallback
 
 
 def search_restaurants(
@@ -411,11 +398,6 @@ def search_restaurants(
     return results
 
 
-def get_food_events(city: str) -> list[dict]:
-    """
-    Use Brave Search + LLM to find and extract food festivals and culinary events in a city.
-    """
-    return brave_llm_events(city, limit=5)
 
 
 def get_city_food_culture(city: str) -> str:

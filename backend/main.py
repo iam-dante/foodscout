@@ -15,7 +15,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
-from food import search_restaurants, get_food_events, brave_search_food_reviews
+from food import search_restaurants, brave_search_food_reviews
 from agent import run_agent, run_agent_stream
 
 app = FastAPI(title="Smart Food Discovery API")
@@ -116,10 +116,7 @@ async def get_restaurants(
     return {"restaurants": results}
 
 
-@app.get("/food/events")
-async def get_events(city: str = Query(...)):
-    events = get_food_events(city)
-    return {"events": events}
+
 
 
 @app.get("/food/reviews")
