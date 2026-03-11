@@ -1,12 +1,14 @@
 """
-Food discovery APIs - Overpass, Wikipedia, Brave Search
+Food discovery APIs - Overpass, Wikipedia, Brave Search + LLM extraction
 """
 
+import json
 import os
 import re
 from typing import Optional
 
 import httpx
+from langchain_openai import ChatOpenAI
 
 NOMINATIM_REVERSE = "https://nominatim.openstreetmap.org/reverse"
 OVERPASS_URL = "https://overpass-api.de/api/interpreter"
@@ -120,6 +122,49 @@ def brave_search_restaurants(
     return results[:limit]
 
 
+def brave_count_restaurants(
+    lat: float,
+    lon: float,
+    city: str = "",
+    cuisine: Optional[str] = None,
+) -> int:
+    """
+    Estimate the number of restaurants in an area using Brave Search.
+    Prefers Brave local location totals when available.
+    """
+    q = f"restaurants near {city}" if city else f"restaurants near {lat},{lon}"
+    if cuisine:
+        q = f"{cuisine} {q}"
+
+    data = _brave_web_search(q, count=20, extra_snippets=False)
+    if not data:
+        return 0
+
+    locations = data.get("locations", {})
+    location_results = locations.get("results", [])
+
+    for key in ("total", "count", "total_results", "totalResults"):
+        value = locations.get(key)
+        if isinstance(value, int):
+            return max(value, 0)
+        if isinstance(value, str) and value.isdigit():
+            return int(value)
+
+    if location_results:
+        return len(location_results)
+
+    web = data.get("web", {})
+    web_results = web.get("results", [])
+    for key in ("total", "count", "total_results", "totalResults"):
+        value = web.get(key)
+        if isinstance(value, int):
+            return max(value, 0)
+        if isinstance(value, str) and value.isdigit():
+            return int(value)
+
+    return len(web_results)
+
+
 def _enrich_brave_locations(locations: list[dict]) -> list[dict]:
     """Fetch POI details for Brave local location results."""
     headers = _brave_headers()
@@ -178,6 +223,122 @@ def _enrich_brave_locations(locations: list[dict]) -> list[dict]:
     return results
 
 
+def _get_llm():
+    """Get a shared LLM instance for extraction."""
+    api_key = os.getenv("OPENAI_API_KEY") or os.getenv("CHATGPT_API_KEY")
+    return ChatOpenAI(model="gpt-4o-mini", api_key=api_key, temperature=0)
+
+
+def brave_llm_restaurants(lat: float, lon: float, city: str = "", limit: int = 20) -> list[dict]:
+    """
+    Use Brave Search + LLM to extract structured restaurant data (name + address).
+    """
+    if not city:
+        geo = reverse_geocode(lat, lon)
+        city = geo.get("city") or geo.get("country") or ""
+
+    q = f"best restaurants in {city}"
+    data = _brave_web_search(q, count=20, extra_snippets=True)
+    web_results = data.get("web", {}).get("results", [])
+    if not web_results:
+        return []
+
+    # Build context from search results
+    snippets = []
+    for r in web_results[:20]:
+        snippet = f"Title: {r.get('title', '')}\nURL: {r.get('url', '')}\nDescription: {r.get('description', '')}"
+        extras = r.get("extra_snippets", [])
+        if extras:
+            snippet += "\nExtra: " + " | ".join(extras[:3])
+        snippets.append(snippet)
+    context = "\n\n".join(snippets)
+
+    prompt = f"""From the following web search results about restaurants in {city}, extract as many real restaurants as possible (up to {limit}).
+
+For each restaurant, extract:
+- name: the actual restaurant name (not the article title)
+- address: the street address or location description if available, otherwise the neighborhood or area in {city}
+
+Return ONLY a JSON array of objects with "name" and "address" keys. No extra text.
+
+Search results:
+{context}"""
+
+    try:
+        llm = _get_llm()
+        response = llm.invoke(prompt)
+        text = response.content.strip()
+        # Strip markdown code fences if present
+        if text.startswith("```"):
+            text = text.split("\n", 1)[1] if "\n" in text else text[3:]
+            if text.endswith("```"):
+                text = text[:-3]
+            text = text.strip()
+        restaurants = json.loads(text)
+        return restaurants[:limit]
+    except Exception:
+        # Fallback: return raw results
+        fallback = []
+        for r in web_results[:limit]:
+            fallback.append({"name": r.get("title", ""), "address": city})
+        return fallback
+
+
+def brave_llm_events(city: str, limit: int = 5) -> list[dict]:
+    """
+    Use Brave Search + LLM to extract structured food event data.
+    """
+    q = f"food festivals culinary events {city} 2026"
+    data = _brave_web_search(q, count=10, extra_snippets=True)
+    web_results = data.get("web", {}).get("results", [])
+    if not web_results:
+        return []
+
+    snippets = []
+    for r in web_results[:10]:
+        snippet = f"Title: {r.get('title', '')}\nURL: {r.get('url', '')}\nDescription: {r.get('description', '')}"
+        extras = r.get("extra_snippets", [])
+        if extras:
+            snippet += "\nExtra: " + " | ".join(extras[:3])
+        snippets.append(snippet)
+    context = "\n\n".join(snippets)
+
+    prompt = f"""From the following web search results about food events in {city}, extract exactly {limit} real food events or festivals.
+
+For each event, extract:
+- name: the actual event/festival name
+- date: the date or date range (e.g. "March 15-17, 2026") or "TBA" if not found
+- venue: the venue name or location
+- url: a relevant URL if available, otherwise empty string
+
+Return ONLY a JSON array of objects with "name", "date", "venue", and "url" keys. No extra text.
+
+Search results:
+{context}"""
+
+    try:
+        llm = _get_llm()
+        response = llm.invoke(prompt)
+        text = response.content.strip()
+        if text.startswith("```"):
+            text = text.split("\n", 1)[1] if "\n" in text else text[3:]
+            if text.endswith("```"):
+                text = text[:-3]
+            text = text.strip()
+        events = json.loads(text)
+        return events[:limit]
+    except Exception:
+        fallback = []
+        for r in web_results[:limit]:
+            fallback.append({
+                "name": r.get("title", ""),
+                "date": "TBA",
+                "venue": "",
+                "url": r.get("url", ""),
+            })
+        return fallback
+
+
 def search_restaurants(
     lat: float,
     lon: float,
@@ -185,16 +346,23 @@ def search_restaurants(
     limit: int = 20,
 ) -> list[dict]:
     """
-    Find restaurants near coordinates. Tries Brave Search (local enrichments)
-    first, then falls back to Overpass API (OpenStreetMap).
+    Find restaurants near coordinates using Brave Search + LLM extraction.
+    Falls back to Overpass API (OpenStreetMap) if Brave fails.
     """
     geo = reverse_geocode(lat, lon)
     city = geo.get("city") or geo.get("country") or ""
 
+    # Try LLM-backed extraction first
+    llm_results = brave_llm_restaurants(lat, lon, city, limit)
+    if llm_results:
+        return llm_results
+
+    # Fallback to Brave local enrichments
     brave_results = brave_search_restaurants(lat, lon, city, cuisine, limit)
     if brave_results:
         return brave_results
 
+    # Fallback to Overpass
     radius_m = 2000
     query = f"""
     [out:json][timeout:25];
@@ -245,20 +413,9 @@ def search_restaurants(
 
 def get_food_events(city: str) -> list[dict]:
     """
-    Use Brave Search to find food festivals and culinary events in a city.
+    Use Brave Search + LLM to find and extract food festivals and culinary events in a city.
     """
-    q = f"food festivals culinary events {city} 2026"
-    data = _brave_web_search(q, count=10)
-    events = []
-    for r in data.get("web", {}).get("results", []):
-        events.append({
-            "name": r.get("title", ""),
-            "date": r.get("age", "TBA"),
-            "venue": "",
-            "url": r.get("url", ""),
-            "description": r.get("description", ""),
-        })
-    return events
+    return brave_llm_events(city, limit=5)
 
 
 def get_city_food_culture(city: str) -> str:

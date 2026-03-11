@@ -60,8 +60,8 @@ async def chat(req: ChatRequest):
         response = f"Sorry, I had trouble processing that request. Please try again. ({type(e).__name__})"
         tools_used = []
 
-    restaurants = search_restaurants(req.lat, req.lon, limit=5)
-    restaurants = [r for r in restaurants if "error" not in r and r.get("name")][:5]
+    restaurants = search_restaurants(req.lat, req.lon, limit=20)
+    restaurants = [r for r in restaurants if "error" not in r and r.get("name")]
 
     return ChatResponse(
         response=response,
@@ -73,8 +73,8 @@ async def chat(req: ChatRequest):
 
 async def chat_stream_generator(req: ChatRequest):
     """SSE generator for streaming chat responses."""
-    restaurants = search_restaurants(req.lat, req.lon, limit=5)
-    restaurants = [r for r in restaurants if "error" not in r and r.get("name")][:5]
+    restaurants = search_restaurants(req.lat, req.lon, limit=20)
+    restaurants = [r for r in restaurants if "error" not in r and r.get("name")]
 
     try:
         async for event_type, data in run_agent_stream(
@@ -112,8 +112,8 @@ async def get_restaurants(
     lat: float = Query(...),
     lon: float = Query(...),
 ):
-    results = search_restaurants(lat, lon, limit=5)
-    return {"restaurants": results[:5]}
+    results = search_restaurants(lat, lon, limit=20)
+    return {"restaurants": results}
 
 
 @app.get("/food/events")

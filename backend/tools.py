@@ -6,6 +6,7 @@ from langchain_core.tools import tool
 
 from food import (
     search_restaurants,
+    brave_count_restaurants,
     get_food_events,
     get_city_food_culture,
     get_trending_dishes,
@@ -21,14 +22,26 @@ def search_restaurants_tool(lat: float, lon: float, cuisine: str = "", limit: in
     """
     Search for restaurants, cafes, and bars near given coordinates.
     Use this when the user asks about restaurants, places to eat, or food spots in a location.
-    lat: latitude, lon: longitude, cuisine: optional filter (e.g. Japanese, Italian), limit: max results.
+    We can get the count of restaurants in the area using Brave Search (when available).
+    Place-type options: restaurant, cafe, bar, local, fast_food, bakery, pub, bistro, etc.
+    lat: latitude, lon: longitude, cuisine: optional filter (e.g. Japanese, Italian, local, cafe), limit: max results.
     """
-    results = search_restaurants(float(lat), float(lon), cuisine or None, limit)
+    lat = float(lat)
+    lon = float(lon)
+    cuisine_filter = cuisine or None
+
+    results = search_restaurants(lat, lon, cuisine_filter, limit)
     if not results:
         return "No restaurants found nearby."
     if results and "error" in results[0]:
         return f"Error fetching restaurants: {results[0]['error']}"
+
+    brave_count = brave_count_restaurants(lat, lon, cuisine=cuisine_filter)
     lines = []
+    if brave_count > 0:
+        lines.append(f"Estimated restaurant count in this area (Brave): {brave_count}")
+        lines.append("")
+
     for r in results:
         line = f"- {r['name']} ({r.get('cuisine', 'Various')})"
         if r.get("rating"):
