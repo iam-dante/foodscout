@@ -11,6 +11,8 @@ from food import (
     get_trending_dishes,
     reverse_geocode,
     get_local_dishes,
+    brave_search_food_reviews,
+    brave_search_food,
 )
 
 
@@ -28,11 +30,59 @@ def search_restaurants_tool(lat: float, lon: float, cuisine: str = "", limit: in
         return f"Error fetching restaurants: {results[0]['error']}"
     lines = []
     for r in results:
-        line = f"- {r['name']} ({r['cuisine']})"
+        line = f"- {r['name']} ({r.get('cuisine', 'Various')})"
+        if r.get("rating"):
+            line += f" ⭐ {r['rating']}"
+        if r.get("review_count"):
+            line += f" ({r['review_count']} reviews)"
         if r.get("address"):
             line += f" — {r['address']}"
         if r.get("opening_hours"):
             line += f" | Hours: {r['opening_hours']}"
+        if r.get("url"):
+            line += f" | {r['url']}"
+        if r.get("description"):
+            line += f" | {r['description'][:100]}"
+        lines.append(line)
+    return "\n".join(lines)
+
+
+@tool
+def search_food_reviews_tool(city: str, dish_or_restaurant: str = "") -> str:
+    """
+    Search the web for food reviews in a city, or for a specific dish or restaurant.
+    Use when the user asks about reviews, what people say, ratings, or opinions about food in a location.
+    city: the city/location name, dish_or_restaurant: optional specific dish or restaurant name.
+    """
+    results = brave_search_food_reviews(city, dish_or_restaurant)
+    if not results:
+        return f"No food reviews found for {city}."
+    lines = [f"Food reviews for {city}" + (f" - {dish_or_restaurant}" if dish_or_restaurant else "") + ":"]
+    for r in results[:8]:
+        line = f"- {r['title']}"
+        if r.get("description"):
+            line += f": {r['description'][:150]}"
+        if r.get("url"):
+            line += f" ({r['url']})"
+        lines.append(line)
+    return "\n".join(lines)
+
+
+@tool
+def search_regional_food_tool(city: str, query_extra: str = "") -> str:
+    """
+    Search the web for regional and local food specialties of a city or area.
+    Use when the user asks about what food a region is known for, local specialties, or regional cuisine.
+    city: the city/region name, query_extra: optional extra search terms.
+    """
+    results = brave_search_food(city, query_extra)
+    if not results:
+        return f"No regional food info found for {city}."
+    lines = [f"Regional food of {city}:"]
+    for r in results[:8]:
+        line = f"- {r['title']}: {r.get('description', '')[:150]}"
+        if r.get("url"):
+            line += f" ({r['url']})"
         lines.append(line)
     return "\n".join(lines)
 
@@ -48,7 +98,12 @@ def get_food_events_tool(city: str) -> str:
         return f"No food events found for {city}."
     lines = [f"Food events in {city}:"]
     for e in events:
-        lines.append(f"- {e['name']} at {e.get('venue', 'TBA')} on {e.get('date', 'TBA')}")
+        line = f"- {e['name']}"
+        if e.get("description"):
+            line += f": {e['description'][:120]}"
+        if e.get("url"):
+            line += f" ({e['url']})"
+        lines.append(line)
     return "\n".join(lines)
 
 
@@ -76,10 +131,10 @@ def get_trending_dishes_tool(city: str) -> str:
     lines = [f"Trending dishes for {city}:"]
     for d in dishes:
         line = f"- {d['name']}"
-        if d.get("rating"):
-            line += f" (rating: {d['rating']})"
         if d.get("description"):
-            line += f": {d['description'][:80]}..."
+            line += f": {d['description'][:100]}"
+        if d.get("url"):
+            line += f" ({d['url']})"
         lines.append(line)
     return "\n".join(lines)
 
@@ -103,7 +158,7 @@ def get_location_name_tool(lat: float, lon: float) -> str:
 def get_local_dishes_tool(lat: float, lon: float, city: str = "") -> str:
     """
     Discover local and traditional dishes for a location. Combines reverse geocoding,
-    Wikipedia food culture data, and nearby restaurant cuisine types to identify what
+    Wikipedia food culture data, Brave Search, and nearby restaurant cuisine types to identify what
     foods are popular and traditional in the area. Use this to find out what to eat somewhere.
     """
     dishes = get_local_dishes(float(lat), float(lon), city)
@@ -112,12 +167,21 @@ def get_local_dishes_tool(lat: float, lon: float, city: str = "") -> str:
 
     lines = ["Local food discoveries:"]
     wiki_dishes = [d for d in dishes if d.get("source") == "wikipedia"]
+    brave_dishes = [d for d in dishes if d.get("source") == "brave_search"]
     restaurant_cuisines = [d for d in dishes if d.get("source") == "local_restaurants"]
 
     if wiki_dishes:
         lines.append("\nFrom local food culture:")
         for d in wiki_dishes:
             lines.append(f"  - {d['name']}")
+
+    if brave_dishes:
+        lines.append("\nFrom web search:")
+        for d in brave_dishes:
+            line = f"  - {d['name']}"
+            if d.get("description"):
+                line += f": {d['description'][:100]}"
+            lines.append(line)
 
     if restaurant_cuisines:
         lines.append(f"\nPopular cuisine types near {restaurant_cuisines[0].get('city', 'here')}:")

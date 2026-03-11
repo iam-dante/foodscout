@@ -1,5 +1,5 @@
 """
-Food discovery APIs - Overpass, Ticketmaster, Wikipedia, Tasty (RapidAPI)
+Food discovery APIs - Overpass, Wikipedia, Brave Search
 """
 
 import os
@@ -11,8 +11,171 @@ import httpx
 NOMINATIM_REVERSE = "https://nominatim.openstreetmap.org/reverse"
 OVERPASS_URL = "https://overpass-api.de/api/interpreter"
 WIKIPEDIA_REST = "https://en.wikipedia.org/w/rest.php/v1/page"
-TICKETMASTER_URL = "https://app.ticketmaster.com/discovery/v2/events.json"
-TASTY_URL = "https://tasty.p.rapidapi.com/recipes/list"
+BRAVE_SEARCH_URL = "https://api.search.brave.com/res/v1/web/search"
+BRAVE_LOCAL_POIS_URL = "https://api.search.brave.com/res/v1/local/pois"
+BRAVE_LOCAL_DESC_URL = "https://api.search.brave.com/res/v1/local/descriptions"
+
+
+def _brave_headers() -> dict:
+    api_key = os.getenv("BRAVE_SEARCH_API_KEY")
+    if not api_key:
+        return {}
+    return {
+        "Accept": "application/json",
+        "Accept-Encoding": "gzip",
+        "X-Subscription-Token": api_key,
+    }
+
+
+def _brave_web_search(query: str, count: int = 10, extra_snippets: bool = True) -> dict:
+    """Run a Brave Web Search and return the raw JSON response."""
+    headers = _brave_headers()
+    if not headers:
+        return {}
+    params = {"q": query, "count": min(count, 20)}
+    if extra_snippets:
+        params["extra_snippets"] = "true"
+    try:
+        with httpx.Client(timeout=15) as client:
+            resp = client.get(BRAVE_SEARCH_URL, headers=headers, params=params)
+            resp.raise_for_status()
+            return resp.json()
+    except Exception:
+        return {}
+
+
+def brave_search_food(city: str, query_extra: str = "") -> list[dict]:
+    """
+    Use Brave Search to find food-related information for a city/region.
+    Returns a list of results with title, url, description, and extra_snippets.
+    """
+    q = f"best local food dishes cuisine {city}"
+    if query_extra:
+        q += f" {query_extra}"
+    data = _brave_web_search(q, count=10)
+    results = []
+    for r in data.get("web", {}).get("results", []):
+        results.append({
+            "title": r.get("title", ""),
+            "url": r.get("url", ""),
+            "description": r.get("description", ""),
+            "extra_snippets": r.get("extra_snippets", []),
+        })
+    return results
+
+
+def brave_search_food_reviews(city: str, dish_or_restaurant: str = "") -> list[dict]:
+    """
+    Use Brave Search to find food reviews for a city, a specific dish, or a restaurant.
+    """
+    q = f"food reviews {city}"
+    if dish_or_restaurant:
+        q += f" {dish_or_restaurant}"
+    data = _brave_web_search(q, count=10)
+    results = []
+    for r in data.get("web", {}).get("results", []):
+        results.append({
+            "title": r.get("title", ""),
+            "url": r.get("url", ""),
+            "description": r.get("description", ""),
+            "extra_snippets": r.get("extra_snippets", []),
+        })
+    return results
+
+
+def brave_search_restaurants(
+    lat: float,
+    lon: float,
+    city: str = "",
+    cuisine: Optional[str] = None,
+    limit: int = 10,
+) -> list[dict]:
+    """
+    Use Brave Search with local enrichments to find restaurants near a location.
+    Returns restaurant info with names, addresses, ratings when available.
+    Falls back to location-based text search.
+    """
+    q = f"restaurants near {city}" if city else f"restaurants near {lat},{lon}"
+    if cuisine:
+        q = f"{cuisine} {q}"
+
+    data = _brave_web_search(q, count=limit)
+
+    locations = data.get("locations", {}).get("results", [])
+    if locations:
+        return _enrich_brave_locations(locations[:limit])
+
+    results = []
+    for r in data.get("web", {}).get("results", []):
+        results.append({
+            "name": r.get("title", ""),
+            "cuisine": cuisine or "Various",
+            "address": "",
+            "opening_hours": "",
+            "lat": lat,
+            "lon": lon,
+            "description": r.get("description", ""),
+            "url": r.get("url", ""),
+        })
+    return results[:limit]
+
+
+def _enrich_brave_locations(locations: list[dict]) -> list[dict]:
+    """Fetch POI details for Brave local location results."""
+    headers = _brave_headers()
+    if not headers or not locations:
+        return [{
+            "name": loc.get("title", "Unknown"),
+            "cuisine": "Various",
+            "address": "",
+            "opening_hours": "",
+            "lat": None,
+            "lon": None,
+        } for loc in locations]
+
+    ids = [loc["id"] for loc in locations if loc.get("id")]
+    if not ids:
+        return []
+
+    try:
+        with httpx.Client(timeout=15) as client:
+            resp = client.get(
+                BRAVE_LOCAL_POIS_URL,
+                headers=headers,
+                params=[("ids", id_) for id_ in ids[:20]],
+            )
+            resp.raise_for_status()
+            pois_data = resp.json()
+    except Exception:
+        pois_data = {}
+
+    results = []
+    for poi in pois_data.get("results", []):
+        results.append({
+            "name": poi.get("name", "Unknown"),
+            "cuisine": ", ".join(poi.get("categories", [])) or "Various",
+            "address": poi.get("address", {}).get("streetAddress", ""),
+            "opening_hours": "",
+            "lat": poi.get("coordinates", {}).get("latitude"),
+            "lon": poi.get("coordinates", {}).get("longitude"),
+            "rating": poi.get("rating", {}).get("ratingValue"),
+            "review_count": poi.get("rating", {}).get("ratingCount"),
+            "phone": poi.get("phone"),
+            "url": poi.get("website"),
+        })
+
+    if not results:
+        for loc in locations:
+            results.append({
+                "name": loc.get("title", "Unknown"),
+                "cuisine": "Various",
+                "address": "",
+                "opening_hours": "",
+                "lat": None,
+                "lon": None,
+            })
+
+    return results
 
 
 def search_restaurants(
@@ -22,10 +185,17 @@ def search_restaurants(
     limit: int = 20,
 ) -> list[dict]:
     """
-    Use Overpass API (OpenStreetMap) to find restaurants/cafes/bars near coordinates.
-    Free, no API key needed.
+    Find restaurants near coordinates. Tries Brave Search (local enrichments)
+    first, then falls back to Overpass API (OpenStreetMap).
     """
-    radius_m = 2000  # 2km radius
+    geo = reverse_geocode(lat, lon)
+    city = geo.get("city") or geo.get("country") or ""
+
+    brave_results = brave_search_restaurants(lat, lon, city, cuisine, limit)
+    if brave_results:
+        return brave_results
+
+    radius_m = 2000
     query = f"""
     [out:json][timeout:25];
     (
@@ -75,35 +245,18 @@ def search_restaurants(
 
 def get_food_events(city: str) -> list[dict]:
     """
-    Use Ticketmaster API to find food festivals and culinary events in a city.
-    Requires TICKETMASTER_API_KEY in .env
+    Use Brave Search to find food festivals and culinary events in a city.
     """
-    api_key = os.getenv("TICKETMASTER_API_KEY")
-    if not api_key:
-        return []
-
-    params = {
-        "apikey": api_key,
-        "city": city,
-        "keyword": "food",
-        "size": 10,
-    }
-    try:
-        with httpx.Client(timeout=10) as client:
-            resp = client.get(TICKETMASTER_URL, params=params)
-            resp.raise_for_status()
-            data = resp.json()
-    except Exception:
-        return []
-
+    q = f"food festivals culinary events {city} 2026"
+    data = _brave_web_search(q, count=10)
     events = []
-    emb = data.get("_embedded", {})
-    for ev in emb.get("events", []):
+    for r in data.get("web", {}).get("results", []):
         events.append({
-            "name": ev.get("name", ""),
-            "date": ev.get("dates", {}).get("start", {}).get("localDate", ""),
-            "venue": ev.get("_embedded", {}).get("venues", [{}])[0].get("name", ""),
-            "url": ev.get("url", ""),
+            "name": r.get("title", ""),
+            "date": r.get("age", "TBA"),
+            "venue": "",
+            "url": r.get("url", ""),
+            "description": r.get("description", ""),
         })
     return events
 
@@ -132,7 +285,6 @@ def get_city_food_culture(city: str) -> str:
         if not html or len(html) < 200:
             continue
 
-        # Strip HTML tags
         text = re.sub(r"<[^>]+>", " ", html)
         text = re.sub(r"\s+", " ", text).strip()[:4000]
 
@@ -199,7 +351,7 @@ def reverse_geocode(lat: float, lon: float) -> dict:
 def get_local_dishes(lat: float, lon: float, city: str = "") -> list[dict]:
     """
     Discover local/traditional dishes for a location by combining reverse geocoding
-    with Wikipedia food culture data and Overpass amenity tags.
+    with Wikipedia food culture data, Brave Search results, and Overpass amenity tags.
     """
     if not city:
         geo = reverse_geocode(lat, lon)
@@ -215,6 +367,16 @@ def get_local_dishes(lat: float, lon: float, city: str = "") -> list[dict]:
     )
     for kw in food_keywords[:5]:
         dishes.append({"name": kw.strip(), "source": "wikipedia", "city": city})
+
+    brave_results = brave_search_food(city)
+    for r in brave_results[:5]:
+        dishes.append({
+            "name": r["title"],
+            "source": "brave_search",
+            "description": r["description"][:200],
+            "url": r["url"],
+            "city": city,
+        })
 
     restaurants = search_restaurants(lat, lon, limit=10)
     cuisine_counts: dict[str, int] = {}
@@ -240,45 +402,16 @@ def get_local_dishes(lat: float, lon: float, city: str = "") -> list[dict]:
 
 def get_trending_dishes(city: str) -> list[dict]:
     """
-    Use Tasty API via RapidAPI to get popular recipes/dishes.
-    Requires RAPIDAPI_KEY in .env
+    Use Brave Search to find trending and popular dishes for a city.
     """
-    api_key = os.getenv("RAPIDAPI_KEY")
-    if not api_key:
-        return []
-
-    # Map city to cuisine keywords for Tasty
-    city_cuisines = {
-        "tokyo": "japanese ramen sushi",
-        "paris": "french croissant",
-        "mexico city": "mexican tacos",
-        "new york": "pizza bagel",
-        "rome": "italian pasta",
-        "london": "british fish chips",
-        "bangkok": "thai pad thai",
-        "seoul": "korean kimchi",
-    }
-    query = city_cuisines.get(city.lower(), city)
-
-    headers = {
-        "X-RapidAPI-Key": api_key,
-        "X-RapidAPI-Host": "tasty.p.rapidapi.com",
-    }
-    params = {"from": "0", "size": "8", "q": query}
-
-    try:
-        with httpx.Client(timeout=10) as client:
-            resp = client.get(TASTY_URL, headers=headers, params=params)
-            resp.raise_for_status()
-            data = resp.json()
-    except Exception:
-        return []
-
+    q = f"trending popular must-try dishes food {city}"
+    data = _brave_web_search(q, count=10, extra_snippets=True)
     results = []
-    for r in data.get("results", [])[:8]:
+    for r in data.get("web", {}).get("results", []):
         results.append({
-            "name": r.get("name", ""),
-            "description": r.get("description", "")[:150],
-            "rating": r.get("user_rating", {}).get("score"),
+            "name": r.get("title", ""),
+            "description": r.get("description", "")[:200],
+            "url": r.get("url", ""),
+            "extra_snippets": r.get("extra_snippets", []),
         })
     return results

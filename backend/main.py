@@ -2,6 +2,7 @@
 FastAPI backend for Smart Food Discovery Agent
 """
 
+import json
 import os
 from typing import Optional
 
@@ -11,10 +12,11 @@ load_dotenv()
 
 from fastapi import FastAPI, Query
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
-from food import search_restaurants, get_food_events
-from agent import run_agent
+from food import search_restaurants, get_food_events, brave_search_food_reviews
+from agent import run_agent, run_agent_stream
 
 app = FastAPI(title="Smart Food Discovery API")
 
@@ -33,7 +35,7 @@ class ChatRequest(BaseModel):
     location_name: str
     message: str
     preferences: Optional[str] = ""
-    cuisine: Optional[str] = None
+    restaurant_yelp_id: Optional[str] = None
 
 
 class ChatResponse(BaseModel):
@@ -52,13 +54,14 @@ async def chat(req: ChatRequest):
             req.lon,
             req.location_name,
             req.preferences or "",
+            restaurant_yelp_id=req.restaurant_yelp_id,
         )
     except Exception as e:
         response = f"Sorry, I had trouble processing that request. Please try again. ({type(e).__name__})"
         tools_used = []
 
-    restaurants = search_restaurants(req.lat, req.lon, req.cuisine, limit=10)
-    restaurants = [r for r in restaurants if "error" not in r and r.get("name")]
+    restaurants = search_restaurants(req.lat, req.lon, limit=5)
+    restaurants = [r for r in restaurants if "error" not in r and r.get("name")][:5]
 
     return ChatResponse(
         response=response,
@@ -68,20 +71,65 @@ async def chat(req: ChatRequest):
     )
 
 
+async def chat_stream_generator(req: ChatRequest):
+    """SSE generator for streaming chat responses."""
+    restaurants = search_restaurants(req.lat, req.lon, limit=5)
+    restaurants = [r for r in restaurants if "error" not in r and r.get("name")][:5]
+
+    try:
+        async for event_type, data in run_agent_stream(
+            req.message,
+            req.lat,
+            req.lon,
+            req.location_name,
+            req.preferences or "",
+            restaurant_yelp_id=req.restaurant_yelp_id,
+        ):
+            if event_type == "token":
+                yield f"data: {json.dumps({'type': 'token', 'content': data})}\n\n"
+            elif event_type == "done":
+                yield f"data: {json.dumps({'type': 'done', 'tools_used': data['tools_used'], 'full_response': data.get('full_response', ''), 'restaurants': restaurants})}\n\n"
+    except Exception as e:
+        yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
+
+
+@app.post("/chat/stream")
+async def chat_stream(req: ChatRequest):
+    """Stream chat response as Server-Sent Events."""
+    return StreamingResponse(
+        chat_stream_generator(req),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
 @app.get("/food/restaurants")
 async def get_restaurants(
     lat: float = Query(...),
     lon: float = Query(...),
-    cuisine: Optional[str] = Query(None),
 ):
-    results = search_restaurants(lat, lon, cuisine, limit=20)
-    return {"restaurants": results}
+    results = search_restaurants(lat, lon, limit=5)
+    return {"restaurants": results[:5]}
 
 
 @app.get("/food/events")
 async def get_events(city: str = Query(...)):
     events = get_food_events(city)
     return {"events": events}
+
+
+@app.get("/food/reviews")
+async def get_food_reviews(
+    city: str = Query(...),
+    dish_or_restaurant: Optional[str] = Query(None),
+):
+    """Search for food reviews using Brave Search."""
+    reviews = brave_search_food_reviews(city, dish_or_restaurant or "")
+    return {"reviews": reviews}
 
 
 @app.get("/health")
